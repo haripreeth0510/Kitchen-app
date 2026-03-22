@@ -1,0 +1,57 @@
+name: Kitchen App CI/CD
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Install dependencies
+      run: |
+        cd api
+        npm install
+
+    - name: Run tests
+      run: |
+        cd api
+        npm test
+
+  docker-build:
+    needs: build-test
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build API Docker image
+      run: docker build -t kitchen-api ./api
+
+    - name: Build Web UI Docker image
+      run: docker build -t kitchen-web ./web-ui
+
+  deploy:
+    needs: docker-build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl apply -f k8s/
