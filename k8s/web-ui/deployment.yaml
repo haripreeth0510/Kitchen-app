@@ -1,0 +1,287 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-ui-config
+  namespace: kitchen-app
+data:
+  nginx.conf: |
+    server {
+      listen 80;
+      root /usr/share/nginx/html;
+      index index.html;
+
+      # Same-origin proxy to API service in-cluster.
+      location /api/ {
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://api:3000/;
+      }
+
+      location /health {
+        access_log off;
+        default_type text/plain;
+        return 200 'OK';
+      }
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+    }
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Kitchen Orders</title>
+      <style>
+        :root {
+          --bg: #0b1120;
+          --card: #111827;
+          --line: #263347;
+          --text: #e5e7eb;
+          --muted: #9ca3af;
+          --ok: #3fb950;
+          --bad: #f78166;
+          --blue: #58a6ff;
+        }
+        body {
+          margin: 0 auto;
+          max-width: 900px;
+          padding: 24px 16px;
+          font-family: system-ui, sans-serif;
+          background: var(--bg);
+          color: var(--text);
+        }
+        h1 { margin: 0 0 8px; }
+        .muted { color: var(--muted); margin: 0 0 16px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .card {
+          background: var(--card);
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          padding: 14px;
+        }
+        .row { display: flex; gap: 8px; align-items: center; }
+        input {
+          flex: 1;
+          border-radius: 8px;
+          border: 1px solid var(--line);
+          background: #0d1117;
+          color: var(--text);
+          padding: 10px 12px;
+        }
+        button {
+          border-radius: 8px;
+          border: 1px solid var(--line);
+          background: rgba(88,166,255,.2);
+          color: var(--text);
+          padding: 10px 12px;
+          cursor: pointer;
+        }
+        button:hover { background: rgba(88,166,255,.3); }
+        .ok { color: var(--ok); }
+        .bad { color: var(--bad); }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 10px;
+          font-size: 14px;
+        }
+        th, td {
+          text-align: left;
+          border-bottom: 1px solid var(--line);
+          padding: 8px 6px;
+        }
+        th { color: var(--muted); font-weight: 600; }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); font-size: 12px; }
+        @media (max-width: 820px) {
+          .grid { grid-template-columns: 1fr; }
+        }
+      </style>
+    </head>
+    <body>
+      <h1>Kitchen Orders</h1>
+      <p class="muted">Web UI is served by NGINX and calls API through <code>/api</code>.</p>
+
+      <div class="grid">
+        <section class="card">
+          <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+            <strong>API:</strong> <span id="apiStatus" class="bad">checking...</span>
+          </div>
+          <div class="row">
+            <input id="dish" placeholder="Dish name (e.g. Masala Dosa)" autocomplete="off" />
+            <button id="createBtn">Create</button>
+          </div>
+          <p id="msg" class="muted"></p>
+        </section>
+
+        <section class="card">
+          <div class="row" style="justify-content:space-between;">
+            <strong>Orders</strong>
+            <button id="refreshBtn">Refresh</button>
+          </div>
+          <div style="overflow:auto;">
+            <table>
+              <thead><tr><th>Dish</th><th>Status</th><th>Created</th><th>ID</th></tr></thead>
+              <tbody id="orders"><tr><td colspan="4" class="muted">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <script>
+        const apiBase = '/api';
+        const byId = (id) => document.getElementById(id);
+
+        async function getJson(path) {
+          const r = await fetch(apiBase + path, { headers: { Accept: 'application/json' } });
+          const data = await r.json().catch(() => null);
+          return { r, data };
+        }
+
+        async function refreshHealth() {
+          const el = byId('apiStatus');
+          try {
+            const { r, data } = await getJson('/health');
+            if (!r.ok) throw new Error('bad status');
+            el.textContent = data?.db ? `ok (db: ${data.db})` : 'ok';
+            el.className = 'ok';
+          } catch {
+            el.textContent = 'offline';
+            el.className = 'bad';
+          }
+        }
+
+        function fmtDate(v) {
+          const d = new Date(v);
+          return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+        }
+
+        async function refreshOrders() {
+          const body = byId('orders');
+          body.innerHTML = '<tr><td colspan="4" class="muted">Loading...</td></tr>';
+          try {
+            const { r, data } = await getJson('/orders');
+            if (!r.ok) throw new Error();
+            const orders = Array.isArray(data) ? data : [];
+            if (!orders.length) {
+              body.innerHTML = '<tr><td colspan="4" class="muted">No orders yet.</td></tr>';
+              return;
+            }
+            body.innerHTML = orders.slice().reverse().map((o) => {
+              const id = o?._id || '';
+              return `<tr><td>${o?.dish || ''}</td><td>${o?.status || ''}</td><td>${fmtDate(o?.createdAt)}</td><td class="mono">${id}</td></tr>`;
+            }).join('');
+          } catch {
+            body.innerHTML = '<tr><td colspan="4" class="bad">Failed to load orders.</td></tr>';
+          }
+        }
+
+        async function createOrder() {
+          const dishEl = byId('dish');
+          const msg = byId('msg');
+          const dish = dishEl.value.trim();
+          if (!dish) {
+            msg.textContent = 'Enter a dish name first.';
+            return;
+          }
+          byId('createBtn').disabled = true;
+          msg.textContent = '';
+          try {
+            const r = await fetch(apiBase + '/orders', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ dish })
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
+            msg.textContent = `Created ${data?.dish || dish}`;
+            dishEl.value = '';
+            await refreshOrders();
+            await refreshHealth();
+          } catch (e) {
+            msg.textContent = `Create failed: ${e.message || e}`;
+          } finally {
+            byId('createBtn').disabled = false;
+          }
+        }
+
+        byId('createBtn').addEventListener('click', createOrder);
+        byId('refreshBtn').addEventListener('click', refreshOrders);
+        byId('dish').addEventListener('keydown', (e) => { if (e.key === 'Enter') createOrder(); });
+        refreshHealth();
+        refreshOrders();
+        setInterval(refreshHealth, 8000);
+      </script>
+    </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-ui-deployment
+  namespace: kitchen-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kitchen-web-ui
+  template:
+    metadata:
+      labels:
+        app: kitchen-web-ui
+    spec:
+      containers:
+        - name: kitchen-web-ui
+          image: nginx:alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: web-ui-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+            - name: web-ui-config
+              mountPath: /usr/share/nginx/html/index.html
+              subPath: index.html
+      volumes:
+        - name: web-ui-config
+          configMap:
+            name: web-ui-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-ui-service
+  namespace: kitchen-app
+spec:
+  type: NodePort
+  selector:
+    app: kitchen-web-ui
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
